@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { defineDAINService, ToolConfig } from "@dainprotocol/service-sdk";
-import { CardUIBuilder } from "@dainprotocol/utils";
+import { CardUIBuilder, DainResponse, FormUIBuilder } from "@dainprotocol/utils";
 import fs from 'fs/promises';
 import path from "path";
 import dotenv from "dotenv";
@@ -20,21 +20,21 @@ const addNoteConfig: ToolConfig = {
   output: z.object({
     title: z.string().describe("Title of the created note"),
     fileName: z.string().describe("File name of the created note"),
-    relatedNotes: z.array(z.string()).describe("Titles of related notes")
+    fileContent: z.string().describe("Content of the created note"),
+    relatedNotes: z.array(z.string()).describe("Titles of related notes"),
   }),
   handler: async ({ rawContent }, agentInfo) => {
     // Structure the content
     const { title, content, tags } = await structureContent(rawContent);
 
-    const fileName = `${title.replace(/\s+/g, '-')}.md`;
+    const fileName = `${title}.md`;
     const filePath = path.join(VAULT_PATH, fileName);
 
     // Search for related notes
     const relatedNotes = await searchRelatedNotes(content, title);
 
     // Prepare the content with related notes
-    let fileContent = `# ${title}\n\n`;
-
+    let fileContent = "";
     if (relatedNotes.length > 0) {
       fileContent += "Related Notes:\n";
       for (const note of relatedNotes) {
@@ -45,22 +45,76 @@ const addNoteConfig: ToolConfig = {
 
     fileContent += `${content}\n`;
 
-    if (tags && tags.length > 0) {
-      fileContent += `\nTags: ${tags.join(', ')}`;
-    }
+    // Create a form for editing the content
+    const formUI = new FormUIBuilder()
+      .title("Review and Edit Note")
+      .addField({
+        name: "editedContent",
+        label: "Note Content",
+        type: "string",
+        widget: "textarea",
+        required: true,
+        defaultValue: fileContent,
+        default: fileContent
+      })
+      .onSubmit({
+        tool: "confirm-add-note",
+        paramSchema: {
+          editedContent: { type: "string" },
+          fileName: { type: "string" }
+        },
+        params: {
+          fileName: fileName
+        }
+      })
+      .build();
 
     await fs.writeFile(filePath, fileContent, 'utf8');
 
     const cardUI = new CardUIBuilder()
-      .title("Structured Note Added")
-      .content(`Successfully added structured note: ${title}\nRelated Notes: ${relatedNotes.join(', ')}`)
+      .title("Review Structured Note")
+      .content(`Please review and edit the note content if needed:`)
+      .addChild(formUI)
       .build();
 
-    return {
-      text: `Added structured note "${title}" to Obsidian vault with ${relatedNotes.length} related notes`,
-      data: { title, fileName, relatedNotes },
+    return new DainResponse({
+      text: `Structured note "${title}" created. Please review and confirm.`,
+      data: { title, fileName, fileContent, relatedNotes },
       ui: cardUI
-    };
+    });
+  }
+};
+
+const confirmAddNoteConfig: ToolConfig = {
+  id: "confirm-add-note",
+  name: "Confirm and Add Note to Obsidian",
+  description: "Confirms and adds the edited note to your Obsidian vault",
+  input: z.object({
+    editedContent: z.string().describe("Edited content of the note"),
+    fileName: z.string().describe("File name of the note")
+  }),
+  output: z.object({
+    title: z.string().describe("Title of the created note"),
+    fileName: z.string().describe("File name of the created note")
+  }),
+  handler: async ({ editedContent, fileName }, agentInfo) => {
+    const filePath = path.join(VAULT_PATH, fileName);
+
+    // Write the edited content to the file
+    await fs.writeFile(filePath, editedContent, 'utf8');
+
+    const title = fileName.replace('.md', '')
+
+    const cardUI = new CardUIBuilder()
+      .title("Note Added to Obsidian")
+      .content(`Successfully added note: ${title}`)
+      .build();
+
+    return new DainResponse({
+      text: `Added note "${title}" to Obsidian vault`,
+      data: { title, fileName },
+      ui: cardUI
+    });
   }
 };
 
@@ -100,19 +154,75 @@ const updateTodayNoteConfig: ToolConfig = {
     // Search for related notes
     const relatedNotes = await searchRelatedNotes(updatedDailyNote, title);
 
-    // Write the updated content back to the file
-    await fs.writeFile(todayFilePath, updatedDailyNote, 'utf8');
-
-    const cardUI = new CardUIBuilder()
-      .title("Today's Note Updated")
-      .content(`Successfully updated today's note with: ${title}\nRelated Notes: ${relatedNotes.join(', ')}`)
+    // Create a form for editing the content
+    const formUI = new FormUIBuilder()
+      .title("Review and Edit Today's Note")
+      .addField({
+        name: "editedContent",
+        label: "Note Content",
+        type: "string",
+        widget: "textarea",
+        required: true,
+        defaultValue: updatedDailyNote,
+        default: updatedDailyNote
+      })
+      .onSubmit({
+        tool: "confirm-update-today-note",
+        paramSchema: {
+          editedContent: { type: "string" },
+          fileName: { type: "string" }
+        },
+        params: {
+          fileName: path.basename(todayFilePath)
+        }
+      })
       .build();
 
-    return {
-      text: `Updated today's note in Obsidian vault with new content "${title}" and ${relatedNotes.length} related notes`,
-      data: { title, fileName: path.basename(todayFilePath), AIResponse, relatedNotes },
+    const cardUI = new CardUIBuilder()
+      .title("Review Today's Note Update")
+      .content(`Please review and edit the note content if needed:`)
+      .addChild(formUI)
+      .build();
+
+    return new DainResponse({
+      text: `Updated today's note. Please review and confirm.`,
+      data: { title, fileName: path.basename(todayFilePath), AIResponse: updatedDailyNote, relatedNotes },
       ui: cardUI
-    };
+    });
+  }
+};
+
+const confirmUpdateTodayNoteConfig: ToolConfig = {
+  id: "confirm-update-today-note",
+  name: "Confirm and Update Today's Note in Obsidian",
+  description: "Confirms and updates today's note in your Obsidian vault",
+  input: z.object({
+    editedContent: z.string().describe("Edited content of the note"),
+    fileName: z.string().describe("File name of the note")
+  }),
+  output: z.object({
+    title: z.string().describe("Title of the updated note"),
+    fileName: z.string().describe("File name of the updated note")
+  }),
+  handler: async ({ editedContent, fileName }, agentInfo) => {
+    const todayFilePath = await getTodayNoteFilePath();
+    const filePath = path.join(todayFilePath);
+
+    // Write the edited content to the file
+    await fs.writeFile(filePath, editedContent, 'utf8');
+
+    const title = fileName.replace('.md', '')
+
+    const cardUI = new CardUIBuilder()
+      .title("Today's Note Updated in Obsidian")
+      .content(`Successfully updated today's note: ${title}`)
+      .build();
+
+    return new DainResponse({
+      text: `Updated today's note "${title}" in Obsidian vault`,
+      data: { title, fileName },
+      ui: cardUI
+    });
   }
 };
 
@@ -158,7 +268,7 @@ const dainService = defineDAINService({
   identity: {
     apiKey: process.env.DAIN_API_KEY,
   },
-  tools: [addNoteConfig, searchNotesConfig, updateTodayNoteConfig],
+  tools: [addNoteConfig, searchNotesConfig, updateTodayNoteConfig, confirmAddNoteConfig, confirmUpdateTodayNoteConfig],
 });
 
 dainService.startNode({ port: 2023 }).then(() => {
