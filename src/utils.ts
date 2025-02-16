@@ -3,7 +3,7 @@ import { VAULT_PATH } from ".";
 import fs from 'fs/promises';
 import { ChatPromptTemplate } from "@langchain/core/prompts";
 import { ChatOpenAI } from "@langchain/openai";
-
+import { Temporal } from "@js-temporal/polyfill";
 
 // Function to search for related notes
 export async function searchRelatedNotes(content: string, excludeTitle: string): Promise<string[]> {
@@ -54,27 +54,6 @@ export async function structureContent(rawContent: string): Promise<{ title: str
   const response = await chain.invoke({ raw_transcript: rawContent });
 
   const title = "Structured Thoughts";
-  const content = `
-# ${title}
-
-## Summary
-(Add a brief summary here)
-
-## Key Points
-- Point 1
-- Point 2
-- Point 3
-
-## Detailed Thoughts
-(Expand on the key points here)
-
-## Questions/To-Do
-- Question 1?
-- To-Do: Action item 1
-
-Raw Transcript:
-${rawContent}
-  `;
   const tags = ["structured", "thoughts"];
 
   return { title, content: response.content.toString(), tags };
@@ -147,18 +126,30 @@ export async function structureDailyNote(dailyNote: string, rawContent: string):
     throw new Error("Failed to parse structured content: " + error);
   }
 }
+function formatDateYYYYMMDD(date: Temporal.PlainDate): string {
+  const year = date.year.toString().padStart(4, '0');
+  const month = date.month.toString().padStart(2, '0');
+  const day = date.day.toString().padStart(2, '0');
 
+  return `${year}-${month}-${day}`;
+}
+
+// Get the current date
+
+// Format the date
 export async function getTodayNoteFilePath(): Promise<string> {
-  const today = new Date().toISOString().split("T")[0];
-  return path.join(VAULT_PATH, `/My Calendar/My Daily Notes/${today}.md`);
+  const today = Temporal.Now.plainDateISO();
+  const formattedDate = formatDateYYYYMMDD(today);
+  console.log("today", today);
+  return path.join(VAULT_PATH, `/My Calendar/My Daily Notes/${formattedDate}.md`);
 }
 export async function createDailyNoteViaURI(): Promise<void> {
   // const vaultName = path.basename(VAULT_PATH);
-  const obsidianUri = `obsidian://daily?path=${VAULT_PATH}&silent=true`;
+  const obsidianUri = `obsidian://actions-uri/daily-note/create?vault=66ed71cffdfb0ad4`;
   const openModule = await import("open");
   const open = openModule.default;
   await open(obsidianUri);
-  await new Promise(resolve => setTimeout(resolve, 5000));
+  await new Promise(resolve => setTimeout(resolve, 1000));
 }
 
 /**
