@@ -4,27 +4,39 @@ import fs from 'fs/promises';
 import { ChatPromptTemplate } from "@langchain/core/prompts";
 import { ChatOpenAI } from "@langchain/openai";
 import { Temporal } from "@js-temporal/polyfill";
+import { createVectorStore, findSimilarNotes, loadVaultNotes, loadVectorStore, saveVectorStore } from "./embeddings";
+import { MemoryVectorStore } from "langchain/vectorstores/memory";
+import { Chroma } from "@langchain/community/vectorstores/chroma";
 
 // Function to search for related notes
 export async function searchRelatedNotes(content: string, excludeTitle: string): Promise<string[]> {
-  const files = await fs.readdir(VAULT_PATH);
-  const relatedNotes: string[] = [];
+  const vaultNotes = loadVaultNotes(VAULT_PATH);
+  const vaultPath = "/Users/rami/Documents/Obsidian"; // adjust this to your vault's location
+  const vectorStoreFile = path.join(vaultPath, "vectorStore.json");
 
-  // for (const file of files) {
-  //   if (file.endsWith('.md') && file !== `${excludeTitle}.md`) {
-  //     const filePath = path.join(VAULT_PATH, file);
-  //     const fileContent = await fs.readFile(filePath, 'utf8');
+  // Check if a stored vector store exists; if so, load it. Otherwise, create it.
+  return [] // similarNotes.map(doc => doc.metadata.fileName);
+  let vectorStore: Chroma;
+  try {
+    await fs.access(vectorStoreFile);
+    console.log("Loading existing vector store from disk...");
+    vectorStore = await loadVectorStore(vectorStoreFile);
+  } catch (e) {
+    console.log("Creating new vector store...");
+    vectorStore = await createVectorStore(vaultPath);
+    await saveVectorStore(vectorStore, vectorStoreFile);
+  }
 
-  //     // Simple relevance check: if the new note's content appears in the existing note
-  //     if (fileContent.toLowerCase().includes(content.toLowerCase())) {
-  //       relatedNotes.push(file.replace('.md', ''));
-  //     }
+  // Now, given some query content (for your current note), find similar notes.
+  const similarNotes = await findSimilarNotes(vectorStore, content, 5);
 
-  //     if (relatedNotes.length >= 2) break; // Stop after finding 2 related notes
-  //   }
-  // }
+  console.log("Top similar notes:");
+  similarNotes.forEach(doc => {
+    console.log(`- ${doc.metadata.fileName}: ${doc.pageContent.substring(0, 100)}...`);
+  });
 
-  return relatedNotes;
+  // if it's a title with YYYY-MM-DD, skip all the notes that are in the same folder
+
 }
 
 // Add this constant with your structuring instructions
