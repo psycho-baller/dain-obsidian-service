@@ -115,8 +115,8 @@ export async function structureDailyNote(dailyNote: string, rawContent: string):
   const chain = prompt.pipe(llm);
   // Invoke the chain with the raw transcript.
   console.log("Invoking chain...", dailyNote, rawContent);
-  const response = await chain.invoke({ md_file: dailyNote, raw_transcript: rawContent });
   try {
+    const response = await chain.invoke({ md_file: dailyNote, raw_transcript: rawContent });
     // Validate that required keys exist.
     if (typeof response.content !== "string") {
       throw new Error("Invalid structure in LLM output");
