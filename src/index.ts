@@ -1,51 +1,31 @@
 import { z } from "zod";
 import { defineDAINService, ToolConfig } from "@dainprotocol/service-sdk";
-import { CardUIBuilder, FormUIBuilder } from "@dainprotocol/utils";
+import { CardUIBuilder } from "@dainprotocol/utils";
 import fs from 'fs/promises';
 import path from "path";
 import dotenv from "dotenv";
+import { structureContent, searchRelatedNotes, createDailyNoteViaURI, getTodayNoteFilePath, structureDailyNote, extractMarkdownContent } from "./utils";
 
 dotenv.config({ path: path.resolve(process.cwd(), '.env.development') });
 
-const VAULT_PATH = '/Users/rami/Documents/Obsidian';
-
-// Function to search for related notes
-async function searchRelatedNotes(content: string, excludeTitle: string): Promise<string[]> {
-  const files = await fs.readdir(VAULT_PATH);
-  const relatedNotes: string[] = [];
-
-  for (const file of files) {
-    if (file.endsWith('.md') && file !== `${excludeTitle}.md`) {
-      const filePath = path.join(VAULT_PATH, file);
-      const fileContent = await fs.readFile(filePath, 'utf8');
-
-      // Simple relevance check: if the new note's content appears in the existing note
-      if (fileContent.toLowerCase().includes(content.toLowerCase())) {
-        relatedNotes.push(file.replace('.md', ''));
-      }
-
-      if (relatedNotes.length >= 2) break; // Stop after finding 2 related notes
-    }
-  }
-
-  return relatedNotes;
-}
+export const VAULT_PATH = process.env.VAULT_PATH || '/Users/rami/Documents/Obsidian';
 
 const addNoteConfig: ToolConfig = {
   id: "add-note",
-  name: "Add Note to Obsidian",
-  description: "Creates a new note in your Obsidian vault and finds related notes",
+  name: "Add Structured Note to Obsidian",
+  description: "Structures a raw transcript and creates a new note in your Obsidian vault, finding related notes",
   input: z.object({
-    title: z.string().describe("Title of the note"),
-    content: z.string().describe("Content of the note"),
-    tags: z.array(z.string()).optional().describe("Tags for the note")
+    rawContent: z.string().describe("Raw transcript of thoughts and reflections"),
   }),
   output: z.object({
     title: z.string().describe("Title of the created note"),
     fileName: z.string().describe("File name of the created note"),
     relatedNotes: z.array(z.string()).describe("Titles of related notes")
   }),
-  handler: async ({ title, content, tags }, agentInfo) => {
+  handler: async ({ rawContent }, agentInfo) => {
+    // Structure the content
+    const { title, content, tags } = await structureContent(rawContent);
+
     const fileName = `${title.replace(/\s+/g, '-')}.md`;
     const filePath = path.join(VAULT_PATH, fileName);
 
@@ -72,13 +52,65 @@ const addNoteConfig: ToolConfig = {
     await fs.writeFile(filePath, fileContent, 'utf8');
 
     const cardUI = new CardUIBuilder()
-      .title("Note Added")
-      .content(`Successfully added note: ${title}\nRelated Notes: ${relatedNotes.join(', ')}`)
+      .title("Structured Note Added")
+      .content(`Successfully added structured note: ${title}\nRelated Notes: ${relatedNotes.join(', ')}`)
       .build();
 
     return {
-      text: `Added note "${title}" to Obsidian vault with ${relatedNotes.length} related notes`,
+      text: `Added structured note "${title}" to Obsidian vault with ${relatedNotes.length} related notes`,
       data: { title, fileName, relatedNotes },
+      ui: cardUI
+    };
+  }
+};
+
+const updateTodayNoteConfig: ToolConfig = {
+  id: "update-today-note",
+  name: "Update Today's Note in Obsidian",
+  description: "Structures a raw transcript and updates today's note in your Obsidian vault, creating it if necessary",
+  input: z.object({
+    rawContent: z.string().describe("Raw transcript of thoughts and reflections"),
+  }),
+  output: z.object({
+    title: z.string().describe("Title of the updated note"),
+    fileName: z.string().describe("File name of the updated note"),
+    AIResponse: z.string().describe("Content of the updated note"),
+    relatedNotes: z.array(z.string()).describe("Titles of related notes")
+  }),
+  handler: async ({ rawContent }, agentInfo) => {
+    const todayFilePath = await getTodayNoteFilePath();
+    const title = todayFilePath.replace('.md', '').split('/').pop();
+    let fileExists = await fs.access(todayFilePath).then(() => true).catch(() => false);
+    console.log("fileExists", fileExists, todayFilePath, title);
+    if (!fileExists) {
+      await createDailyNoteViaURI();
+      fileExists = await fs.access(todayFilePath).then(() => true).catch(() => false);
+      if (!fileExists) {
+        throw new Error("Failed to create today's note via Obsidian URI");
+      }
+    }
+
+    // Read existing content
+    let existingContent = await fs.readFile(todayFilePath, 'utf8');
+
+    // Structure the content
+    const AIResponse = await structureDailyNote(existingContent, rawContent);
+    const updatedDailyNote = extractMarkdownContent(AIResponse);
+
+    // Search for related notes
+    const relatedNotes = await searchRelatedNotes(updatedDailyNote, title);
+
+    // Write the updated content back to the file
+    await fs.writeFile(todayFilePath, updatedDailyNote, 'utf8');
+
+    const cardUI = new CardUIBuilder()
+      .title("Today's Note Updated")
+      .content(`Successfully updated today's note with: ${title}\nRelated Notes: ${relatedNotes.join(', ')}`)
+      .build();
+
+    return {
+      text: `Updated today's note in Obsidian vault with new content "${title}" and ${relatedNotes.length} related notes`,
+      data: { title, fileName: path.basename(todayFilePath), AIResponse, relatedNotes },
       ui: cardUI
     };
   }
@@ -126,9 +158,9 @@ const dainService = defineDAINService({
   identity: {
     apiKey: process.env.DAIN_API_KEY,
   },
-  tools: [addNoteConfig, searchNotesConfig],
+  tools: [addNoteConfig, searchNotesConfig, updateTodayNoteConfig],
 });
 
-dainService.startNode({ port: 2022 }).then(() => {
-  console.log("Obsidian Integration Service is running on port 2022");
+dainService.startNode({ port: 2023 }).then(() => {
+  console.log("Obsidian Integration Service is running on port 2023");
 });
