@@ -10,19 +10,19 @@ export async function searchRelatedNotes(content: string, excludeTitle: string):
   const files = await fs.readdir(VAULT_PATH);
   const relatedNotes: string[] = [];
 
-  for (const file of files) {
-    if (file.endsWith('.md') && file !== `${excludeTitle}.md`) {
-      const filePath = path.join(VAULT_PATH, file);
-      const fileContent = await fs.readFile(filePath, 'utf8');
+  // for (const file of files) {
+  //   if (file.endsWith('.md') && file !== `${excludeTitle}.md`) {
+  //     const filePath = path.join(VAULT_PATH, file);
+  //     const fileContent = await fs.readFile(filePath, 'utf8');
 
-      // Simple relevance check: if the new note's content appears in the existing note
-      if (fileContent.toLowerCase().includes(content.toLowerCase())) {
-        relatedNotes.push(file.replace('.md', ''));
-      }
+  //     // Simple relevance check: if the new note's content appears in the existing note
+  //     if (fileContent.toLowerCase().includes(content.toLowerCase())) {
+  //       relatedNotes.push(file.replace('.md', ''));
+  //     }
 
-      if (relatedNotes.length >= 2) break; // Stop after finding 2 related notes
-    }
-  }
+  //     if (relatedNotes.length >= 2) break; // Stop after finding 2 related notes
+  //   }
+  // }
 
   return relatedNotes;
 }
@@ -133,8 +133,6 @@ function formatDateYYYYMMDD(date: Temporal.PlainDate): string {
 
   return `${year}-${month}-${day}`;
 }
-
-// Get the current date
 
 // Format the date
 export async function getTodayNoteFilePath(): Promise<string> {
