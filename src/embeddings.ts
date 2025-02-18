@@ -1,22 +1,75 @@
 import { OpenAIEmbeddings } from "@langchain/openai";
 import { Document } from "@langchain/core/documents";
+import { RecursiveCharacterTextSplitter } from "langchain/text_splitter";
 import fs from "fs/promises";
 import path from "path";
 import { Chroma } from "@langchain/community/vectorstores/chroma";
+
+const VAULT_PATH = process.env.VAULT_PATH || '/Users/rami/Documents/Obsidian';
+
 /**
  * Load all markdown notes from your vault folder.
  * Adjust the file extension filter if necessary.
  */
 export async function loadVaultNotes(vaultPath: string): Promise<Document[]> {
-    const files = await fs.readdir(vaultPath);
-    const mdFiles = files.filter(file => file.endsWith(".md"));
     const docs: Document[] = [];
+    const splitter = new RecursiveCharacterTextSplitter({
+        chunkSize: 4000,
+        chunkOverlap: 200,
+    });
 
-    for (const file of mdFiles) {
-        const filePath = path.join(vaultPath, file);
-        const content = await fs.readFile(filePath, "utf8");
-        docs.push({ pageContent: content, metadata: { fileName: file } });
+    const constraints = (filePath: string) => {
+        const parts = filePath.split(path.sep);
+        return parts.some(part => part.startsWith(".") || part.startsWith("_") || part.startsWith("My Calendar") || part.startsWith("Hidden") || part.startsWith("Essays") || part.startsWith("USV"));
+    };
+
+    const selectedDirs = new Set<string>(["My Greenhouse", "My Thoughts"]);
+
+    // Function to remove YAML frontmatter from markdown content
+    const removeYAMLFrontmatter = (content: string): string => {
+        const lines = content.split('\n');
+        if (lines[0]?.trim() === '---') {
+            const closingIndex = lines.findIndex((line, index) => index > 0 && line.trim() === '---');
+            if (closingIndex !== -1) {
+                // Return content after the closing '---', skipping an extra newline
+                return lines.slice(closingIndex + 1).join('\n').trim();
+            }
+        }
+        return content;
+    };
+
+    const visit = async (dirPath: string) => {
+        const files = await fs.readdir(dirPath);
+        for (const file of files) {
+            const filePath = path.join(dirPath, file);
+            const stat = await fs.stat(filePath);
+            if (stat.isDirectory() && selectedDirs.has(file)) {
+                console.log("filePath:", filePath);
+                await visit(filePath);
+            } else if (file.endsWith(".md")) {
+                let content = await fs.readFile(filePath, "utf8");
+                
+                // Remove YAML frontmatter if it exists
+                content = removeYAMLFrontmatter(content);
+                
+                // Only process if there's content after removing frontmatter
+                if (content.trim()) {
+                    // Split the content into smaller chunks
+                    const chunks = await splitter.createDocuments([content]);
+                    // Add metadata to each chunk
+                    chunks.forEach((chunk, index) => {
+                        chunk.metadata = {
+                            fileName: file,
+                            chunkIndex: index,
+                            totalChunks: chunks.length
+                        };
+                    });
+                    docs.push(...chunks);
+                }
+            }
+        }
     }
+    await visit(vaultPath);
     return docs;
 }
 
@@ -26,15 +79,58 @@ export async function loadVaultNotes(vaultPath: string): Promise<Document[]> {
  * for each note and stores them in an in-memory vector store.
  */
 export async function createVectorStore(vaultPath: string): Promise<Chroma> {
+    console.log("Creating vector store...", vaultPath);
     const docs = await loadVaultNotes(vaultPath);
-    // Replace OpenAIEmbeddings with a custom implementation if you prefer BGE-micro-v2.
-    const embeddings = new OpenAIEmbeddings({ model: "text-embedding-ada-002" });
-    // const vectorStore = await MemoryVectorStore.fromDocuments(docs, embeddings);
-    const vectorStore = new Chroma(embeddings, {
-        collectionName: "a-test-collection",
+    const embeddings = new OpenAIEmbeddings({
+        model: "text-embedding-3-large",
+        apiKey: process.env.OPENAI_API_KEY
     });
-    // return vectorStore;
-    await vectorStore.addDocuments(docs);
+
+    const collectionName = "rami-journal-embeddings";
+    const vectorStore = new Chroma(embeddings, {
+        collectionName,
+        url: "http://localhost:8000"
+    });
+
+    // Ensure collection exists and get its content
+    let existingDocs;
+    try {
+        // First, ensure the collection exists
+        await vectorStore.ensureCollection();
+
+        // Then get the collection's content
+        const collection = vectorStore.collection;
+        if (collection) {
+            existingDocs = await collection.get();
+            console.log("Existing collection size:", existingDocs?.ids?.length || 0);
+        }
+    } catch (error) {
+        console.error("Error accessing collection:", error);
+        existingDocs = { ids: [] };
+    }
+
+    // Create a Set of existing file names
+    const existingFileNames = new Set(existingDocs?.ids?.map((id: string) => {
+        console.log("Document ID:", id);
+        try {
+            return id.split('_')[0];
+        } catch {
+            return id;
+        }
+    }) || []);
+
+    // Filter out documents that are already in the store
+    const newDocs = docs.filter(doc => !existingFileNames.has(doc.metadata.fileName));
+
+    if (newDocs.length > 0) {
+        console.log(`Adding ${newDocs.length} new documents to vector store...`);
+        await vectorStore.addDocuments(newDocs, {
+            ids: newDocs.map(doc => `${doc.metadata.fileName}_${doc.metadata.chunkIndex}`)
+        });
+    } else {
+        console.log("No new documents to add to vector store.");
+    }
+
     return vectorStore;
 }
 
@@ -48,54 +144,63 @@ export async function saveVectorStore(vectorStore: Chroma, savePath: string): Pr
 }
 
 /**
- * Load the vector store from a JSON file.
- */
-export async function loadVectorStore(savePath: string): Promise<Chroma> {
-    const data = await fs.readFile(savePath, "utf8");
-    const storeData = JSON.parse(data);
-    const embeddings = new OpenAIEmbeddings({ model: "text-embedding-ada-002", apiKey: process.env.OPENAI_API_KEY });
-    const vectorStore = new Chroma(embeddings, {
-        collectionName: "rami-journal-embeddings",
-    });
-    vectorStore.addDocuments(storeData)
-    return vectorStore;
-}
-
-/**
  * Given a query text, find the most similar notes in the vector store.
  */
 export async function findSimilarNotes(
     vectorStore: Chroma,
     queryText: string,
-    topK: number = 5
+    topK: number = 20
 ) {
-    const results = await vectorStore.similaritySearch(queryText, topK);
+    const results = await vectorStore.similaritySearchWithScore(queryText, topK);
     return results;
 }
 
 // // Example usage:
-// (async () => {
-//   const vaultPath = "/Users/rami/Documents/Obsidian"; // adjust this to your vault's location
-//   const vectorStoreFile = path.join(vaultPath, "vectorStore.json");
+(async () => {
+    // Check if a stored vector store exists; if so, load it. Otherwise, create it.
+    let vectorStore: Chroma;
+    // try {
+    //     await fs.access(vectorStoreFile);
+    //     console.log("Loading existing vector store from disk...");
+    //     vectorStore = await loadVectorStore(vectorStoreFile);
+    // } catch (e) {
+    //     console.log("Creating new vector store...");
+    vectorStore = await createVectorStore(VAULT_PATH);
+    // await saveVectorStore(vectorStore, vectorStoreFile);
+    // }
 
-//   // Check if a stored vector store exists; if so, load it. Otherwise, create it.
-//   let vectorStore: Chroma;
-//   try {
-//     await fs.access(vectorStoreFile);
-//     console.log("Loading existing vector store from disk...");
-//     vectorStore = await loadVectorStore(vectorStoreFile);
-//   } catch (e) {
-//     console.log("Creating new vector store...");
-//     vectorStore = await createVectorStore(vaultPath);
-//     await saveVectorStore(vectorStore, vectorStoreFile);
-//   }
+    // Now, given some query content (for your current note), find similar notes.
+    const queryText = `- Finding your life partner is one of the most important parts of anyone's life.
+	- just as important as what university you go to or don't go to
+	- or what profession you decide to pursue
+	- or where you're born
+- The thing is, we have full autonomy on who we decide to pick but unfortunately men are too scared to approach and talk to the [[Women]] around them
+- For that reason, they never figure out the kind of woman that matches well with them.
+	- this knowledge can't be claimed from any book. It can only be found from experience
 
-//   // Now, given some query content (for your current note), find similar notes.
-//   const queryText = "My reflections on today's challenges and learnings."; // replace with your current note content
-//   const similarNotes = await findSimilarNotes(vectorStore, queryText, 5);
+# The internal conflict
+- In my religion, talking and having [[Relationships]] with women who is not your wife is prohibited
+- so as someone who believes in [[Islam]], I can't be advocating for people to approach women
+- in addition to that, so many of these YouTubers/influencers give off that vibe that they are "using" women. Flexing that he can pick up any women he wants
+	- I don't wanna be that kinda guy
 
-//   console.log("Top similar notes:");
-//   similarNotes.forEach(doc => {
-//     console.log(`- ${doc.metadata.fileName}: ${doc.pageContent.substring(0, 100)}...`);
-//   });
-// })();
+# So what should I do?
+- there must be other ways I can achieve that:
+	- educating
+	- showing the perspective of women that a lot of men are not aware of or don't consider
+		- conducting interviews with women
+`;
+    const similarNotes = await findSimilarNotes(vectorStore, queryText);
+    console.log("Found", similarNotes.length, "similar notes:");
+    const seenDocs = new Set<string>();
+
+
+    similarNotes.forEach(([doc, score]) => {
+        const key = `${doc.metadata.fileName}-${doc.pageContent.substring(0, 50)}`;
+        if (!seenDocs.has(key)) {
+            seenDocs.add(key);
+            console.log(`\n[Score: ${(score * 100).toFixed(2)}%] ${doc.metadata.fileName}:`);
+            console.log(`${doc.pageContent.substring(0, 50)}...`);
+        }
+    });
+})();
